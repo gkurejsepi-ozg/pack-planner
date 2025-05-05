@@ -228,9 +228,10 @@ if uploaded_file:
         spares_df['Shipper Compartment'] = ''
         final_df = pd.concat([processed_df, spares_df], ignore_index=True)
 
-        # Show Pack Plan
+        # Visualise Pack Plan
         st.subheader("Pack Plan")
-        st.write(final_df)
+        DisplayPackPlan = st.expander("Pack Plan")
+        DisplayPackPlan.write(processed_df)
 
         # Age Spread Plot
         st.subheader("Age Spread per Shipper")
@@ -242,7 +243,9 @@ if uploaded_file:
         ax.set_xlabel('Shipper Index')
         ax.set_ylabel('Age Difference (Days)')
         ax.grid(True)
-        st.pyplot(fig)
+        
+        DisplayAgeSpread = st.expander("Age Spread in Shippers")
+        DisplayAgeSpread.pyplot(fig)
 
         # Download
         output_csv = final_df.to_csv(index=False)
