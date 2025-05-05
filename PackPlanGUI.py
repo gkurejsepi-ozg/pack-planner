@@ -1,18 +1,45 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Mon Apr 28 13:23:12 2025
+Created on Mon May  5 09:34:01 2025
+
 @author: gkurejsepi
 """
+
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 
 #%%% Meta updates
-Title = "Mouse Packer v3.5"
+Title = "Mouse Packer v4"
 
 # Changelog
 Changelog = """
+#------#
+
+V4.0 Spare allocator
+- Built a new function called assess_animal_list
+    - First reads the xlsx, and identifies cohorts
+        - for each cohort, it counts genotype and sex
+
+- Built a new function called spare_allocator:
+    - uses the user input for number of spares
+    - Checks the age spread in that sex per genotype
+    - Finds animals as close to the 'median' age
+    
+- UI Updated:
+    - Spares to allocate input fields added
+        - dynamically generated after assessing the animal list
+    
+- Core logic updated:
+    - Functions used to automatically execute once spreadsheet was uploaded
+    - Split the logic to a new flow:
+        - assess_animal_list executes once uploaded
+    - spare_allocator (and the remainder) executes once the user clicks generate "pack plan"
+        - empty counts as '0' for spares
+        
+#------#
+
 V3.5 changelog
 - Updated to use xlsx instead of CSV
 - Removed assign_shippers_v2: Deprecated function that was replaced by assign_shippers_v3
@@ -30,71 +57,59 @@ V3.5 changelog
 
 #%%%
 
-# Functions 
+# ---------- FUNCTIONS ---------- #
+
 def sort_genotype_gender(df):
-    """Sorts dataframe by Genotype and Animal Gender (males first, then females)."""
     df = df.sort_values(by=['Genotype', 'Animal Gender', 'Cage', 'Age in Days'], ascending=[True, True, True, True]).reset_index(drop=True)
     return df
 
 def extract_ear_tag(animal_id):
-    """Extracts the ear tag from the Animal ID (3rd and 2nd last characters)."""
     return animal_id[-3:-1] if isinstance(animal_id, str) and len(animal_id) >= 3 else ""
-    """Assign animals to shippers by grouping to minimize number of shippers while respecting constraints."""
-    shippers = []  # List of shippers, each is a list of animals
-    shipper_id = 1
 
-    # Group animals by Genotype, Gender, and Cage, larger groups first
-    grouped = df.groupby(['Genotype', 'Animal Gender', 'Cage'])
+def assess_animal_list(df):
+    summary = []
+    for cohort, cohort_df in df.groupby("Sub Project Code"):
+        for genotype in cohort_df['Genotype'].unique():
+            for sex in ['M', 'F']:
+                count = len(cohort_df[(cohort_df['Genotype'] == genotype) & (cohort_df['Animal Gender'] == sex)])
+                summary.append({
+                    'Sub Project Code': cohort,
+                    'Genotype': genotype,
+                    'Animal Gender': sex,
+                    'Count': count,
+                    'Spares to Allocate': 0
+                })
+    return pd.DataFrame(summary)
 
-    # Sort groups largest first
-    group_list = sorted(grouped, key=lambda x: len(x[1]), reverse=True)
+def allocate_spares(df, spare_allocations):
+    spare_list = []
+    spare_ids = set()
 
-    for (genotype, gender, cage), group_df in group_list:
-        animals = group_df.to_dict('records')
+    for _, row in spare_allocations.iterrows():
+        cohort = row['Sub Project Code']
+        genotype = row['Genotype']
+        sex = row['Animal Gender']
+        n_spares = row['Spares to Allocate']
 
-        # Try to fit the whole group into an existing shipper
-        assigned = False
-        for shipper in shippers:
-            if (len(shipper) + len(animals) <= 5 and
-                all(a['Animal Gender'] == gender for a in shipper) and
-                all(a['Genotype'] == genotype for a in shipper) and
-                (gender == 'F' or all(a['Cage'] == cage for a in shipper if a['Animal Gender'] == 'M')) and
-                not any(extract_ear_tag(a['Animal Code']) in [extract_ear_tag(b['Animal Code']) for b in shipper] for a in animals)):
-                
-                # Add animals to this shipper
-                for a in animals:
-                    a['Ear Tag'] = extract_ear_tag(a['Animal Code'])
-                    a['ShipperIndex'] = shippers.index(shipper) + 1
-                    shipper.append(a)
-                assigned = True
-                break
+        subset = df[(df['Sub Project Code'] == cohort) & (df['Genotype'] == genotype) & (df['Animal Gender'] == sex)]
+        if not subset.empty and n_spares > 0:
+            sorted_subset = subset.sort_values(by='Age in Days')
+            median_age = sorted_subset['Age in Days'].median()
+            sorted_subset['Age Distance'] = (sorted_subset['Age in Days'] - median_age).abs()
+            selected_spares = sorted_subset.nsmallest(n_spares, 'Age Distance')
+            spare_list.append(selected_spares.drop(columns=['Age Distance']))
+            spare_ids.update(selected_spares.index.tolist())
 
-        if not assigned:
-            # Start a new shipper
-            new_shipper = []
-            for a in animals:
-                a['Ear Tag'] = extract_ear_tag(a['Animal Code'])
-                a['ShipperIndex'] = shipper_id
-                new_shipper.append(a)
-            shippers.append(new_shipper)
-            shipper_id += 1
-
-    # Flatten shippers into a DataFrame
-    output_data = [animal for shipper in shippers for animal in shipper]
-    return pd.DataFrame(output_data)
+    df['Is Spare'] = df.index.isin(spare_ids)
+    return df
 
 def assign_shippers_v4(df):
-    """Assign animals to shippers per Sub Project Code (cohort), 
-    ensuring no mixing across cohorts and maintaining global ShipperIndex.
-    Also assigns ShipperCohortIndex per cohort to help with compartment assignment.
-    """
     all_assigned = []
-    global_shipper_id = 1  # Global index across cohorts
+    global_shipper_id = 1
 
-    for cohort, cohort_df in df.groupby("Sub Project Code"):
+    for cohort, cohort_df in df[df['Is Spare'] == False].groupby("Sub Project Code"):
         cohort_df = cohort_df.copy()
         shippers = []
-
         grouped = cohort_df.groupby(['Genotype', 'Animal Gender', 'Cage'])
         group_list = sorted(grouped, key=lambda x: len(x[1]), reverse=True)
 
@@ -112,8 +127,7 @@ def assign_shippers_v4(df):
                     if gender == 'F':
                         existing_ages = [a['Age in Days'] for a in shipper]
                         new_ages = [a['Age in Days'] for a in animals]
-                        combined_ages = existing_ages + new_ages
-                        age_range = max(combined_ages) - min(combined_ages)
+                        age_range = max(existing_ages + new_ages) - min(existing_ages + new_ages)
                         if age_range <= 7:
                             candidate_shippers.append((age_range, shipper))
                     else:
@@ -142,25 +156,17 @@ def assign_shippers_v4(df):
 
     return pd.DataFrame(all_assigned)
 
-
 def sort_by_shipper(df):
-    """Sorts dataframe by Genotype, Animal Gender, and ShipperIndex."""
-    df = df.sort_values(by=['Genotype', 'Animal Gender', 'ShipperIndex'], ascending=[True, True, True]).reset_index(drop=True)
-    return df
+    return df.sort_values(by=['Genotype', 'Animal Gender', 'ShipperIndex']).reset_index(drop=True)
 
 def assign_compartments(df):
-    """Assign compartments per cohort, resetting numbering for each cohort. 
-    Cohorts are processed starting with the smallest."""
     df = df.copy()
     final_df = []
-
-    # Sort cohorts by size (ascending)
     cohorts_sorted = sorted(df['Sub Project Code'].unique(), key=lambda x: len(df[df['Sub Project Code'] == x]))
 
     for cohort in cohorts_sorted:
         cohort_df = df[df['Sub Project Code'] == cohort].copy()
         cohort_df = cohort_df.sort_values(by=['Genotype', 'Animal Gender', 'ShipperCohortIndex']).reset_index(drop=True)
-
         shipper_compartment = []
         current_compartment_number = 1
         current_compartment_letter = 'a'
@@ -187,50 +193,57 @@ def assign_compartments(df):
 
     return pd.concat(final_df, ignore_index=True)
 
-# Streamlit part to upload and process the file
+# ---------- STREAMLIT APP ----------
 st.title(Title)
 
 DisplayChangeLog = st.expander("Updates")
 DisplayChangeLog.write(Changelog)
 
-uploaded_file = st.file_uploader("Choose a file", type="xlsx")
+uploaded_file = st.file_uploader("Upload Animal List (Excel)", type="xlsx")
 
-if uploaded_file is not None:
-    # Read the CSV into a DataFrame
+if uploaded_file:
     df = pd.read_excel(uploaded_file)
-    
-    # Call the sort and process functions
     df = sort_genotype_gender(df)
-    df["Ear Tag"] = df["Animal Code"].apply(extract_ear_tag)
-    
-    # Process shippers and assign compartments
-    processed_df = assign_shippers_v4(df)
-    processed_df = sort_by_shipper(processed_df)
-    processed_df = assign_compartments(processed_df)
-    
-    # Visualise Pack Plan
-    DisplayPackPlan = st.expander("Pack Plan")
-    DisplayPackPlan.write(processed_df)
-  
-    # Visualise the Age spread in Shippers
+    df['Ear Tag'] = df['Animal Code'].apply(extract_ear_tag)
+    df['Is Spare'] = False
 
-    # Calculate the age spread (max - min) per shipper
-    age_spread_df = processed_df.groupby('ShipperIndex')['Age in Days'].agg(lambda x: max(x) - min(x)).reset_index()
-    age_spread_df = age_spread_df.rename(columns={'Age in Days': 'Age Spread'})
+    st.subheader("Cohort Overview & Spare Allocation")
+    spare_df = assess_animal_list(df)
 
-    # Plot it
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.scatter(age_spread_df['ShipperIndex'], age_spread_df['Age Spread'], marker='o')
-    ax.set_title('Age Spread per Shipper')
-    ax.set_xlabel('Shipper Index')
-    ax.set_ylabel('Age Difference (Days)')
-    ax.grid(True)
-    
-    #st.pyplot(fig)
-    
-    DisplayAgeSpread = st.expander("Age Spread in Shippers")
-    DisplayAgeSpread.pyplot(fig)
-    
-    # Allow the user to download the processed result
-    output_csv = processed_df.to_csv(index=False)
-    st.download_button(label="Download Pack Plan", data=output_csv, file_name="processed_pack_plan.csv", mime="text/csv")
+    # Let user enter spares for each row
+    for idx in spare_df.index:
+        label = f"Spares to allocate for {spare_df.at[idx, 'Sub Project Code']} - {spare_df.at[idx, 'Genotype']} - {spare_df.at[idx, 'Animal Gender']}"
+        spare_df.at[idx, 'Spares to Allocate'] = st.number_input(label, min_value=0, value=0, step=1, key=idx)
+
+    if st.button("Generate Pack Plan"):
+        df = allocate_spares(df, spare_df)
+        processed_df = assign_shippers_v4(df)
+        processed_df = sort_by_shipper(processed_df)
+        processed_df = assign_compartments(processed_df)
+
+        # Append spares to final output
+        spares_df = df[df['Is Spare'] == True].copy()
+        spares_df['ShipperIndex'] = 'SPARE'
+        spares_df['ShipperCohortIndex'] = ''
+        spares_df['Shipper Compartment'] = ''
+        final_df = pd.concat([processed_df, spares_df], ignore_index=True)
+
+        # Show Pack Plan
+        st.subheader("Pack Plan")
+        st.write(final_df)
+
+        # Age Spread Plot
+        st.subheader("Age Spread per Shipper")
+        age_spread_df = processed_df.groupby('ShipperIndex')['Age in Days'].agg(lambda x: max(x) - min(x)).reset_index()
+        age_spread_df = age_spread_df.rename(columns={'Age in Days': 'Age Spread'})
+        fig, ax = plt.subplots()
+        ax.scatter(age_spread_df['ShipperIndex'], age_spread_df['Age Spread'])
+        ax.set_title('Age Spread per Shipper')
+        ax.set_xlabel('Shipper Index')
+        ax.set_ylabel('Age Difference (Days)')
+        ax.grid(True)
+        st.pyplot(fig)
+
+        # Download
+        output_csv = final_df.to_csv(index=False)
+        st.download_button("Download Pack Plan", data=output_csv, file_name="processed_pack_plan.csv", mime="text/csv")
