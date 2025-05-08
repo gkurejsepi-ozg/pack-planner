@@ -1,3 +1,15 @@
+"""
+Created on Mon May  5 09:34:01 2025
+
+@author: gkurejsepi
+"""
+
+import streamlit as st
+import pandas as pd
+import matplotlib.pyplot as plt
+#import io
+import xlsxwriter
+
 #%%% Meta updates
 Title = "Mouse Packer v4.2"
 
