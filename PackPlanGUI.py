@@ -1,20 +1,37 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on Mon May  5 09:34:01 2025
-
-@author: gkurejsepi
-"""
-
-import streamlit as st
-import pandas as pd
-import matplotlib.pyplot as plt
-
 #%%% Meta updates
-Title = "Mouse Packer v4"
+Title = "Mouse Packer v4.2"
 
 # Changelog
 Changelog = """
+#------#
+
+V4.2 Formatted MSIF
+- Updated extract_MSIF_table:
+    - defined DOB series as date_time series
+- Updated Streamlit download button:
+    - Included buffer to store and handle xlsx files
+    - added logic:
+        - formatted headers
+        - corrected date_time format to dd/mm/yyy
+
+#------#
+
+V4.1 Create MSIF table
+- Built a new function called extract_MSIF_table
+    - Extracts the columns required for the MSIF
+    - Renames them to match the MSIF requirements
+    - Sorts multiple columns in ascending order
+        - Genotype
+        - Sex
+        - DOB
+        - Animal Code
+
+- UI Updated:
+    - Added button to download MSIF table
+    
+- Core logic updated:
+    - Appended to include extract_MSIF_table
+
 #------#
 
 V4.0 Spare allocator
@@ -193,6 +210,16 @@ def assign_compartments(df):
 
     return pd.concat(final_df, ignore_index=True)
 
+def extract_MSIF_table(df):
+    #Extracts MSIF columns from the pack plan, renames them, sorts them, and adds 'Send' column
+    df = df[["Project ID", "Project Name","Animal Code","Date of Birth","Animal Gender","Genotype"]]
+    df = df.rename({"Animal Gender":"Sex", "Date of Birth":"DOB"}, axis = 1)
+    df = df.sort_values(by=['Animal Code', 'DOB', 'Sex', 'Genotype'], ascending=True)
+    df['DOB'] = pd.to_datetime(df['DOB'])
+    df['Send*'] = None
+    return df
+#%%%
+
 # ---------- STREAMLIT APP ----------
 st.title(Title)
 
@@ -220,6 +247,7 @@ if uploaded_file:
         processed_df = assign_shippers_v4(df)
         processed_df = sort_by_shipper(processed_df)
         processed_df = assign_compartments(processed_df)
+        MSIF_df = extract_MSIF_table(processed_df)
 
         # Append spares to final output
         spares_df = df[df['Is Spare'] == True].copy()
@@ -247,6 +275,32 @@ if uploaded_file:
         DisplayAgeSpread = st.expander("Age Spread in Shippers")
         DisplayAgeSpread.pyplot(fig)
 
-        # Download
+# --- Download Buttons ---
+
+        # CSV for full pack plan
         output_csv = final_df.to_csv(index=False)
-        st.download_button("Download Pack Plan", data=output_csv, file_name="processed_pack_plan.csv", mime="text/csv")
+        st.download_button("Download Pack Plan (CSV)", data=output_csv, file_name="processed_pack_plan.csv", mime="text/csv")
+
+        # Excel for MSIF table with merged headers
+        output_excel = io.BytesIO()
+        with pd.ExcelWriter(output_excel, engine='xlsxwriter', datetime_format='dd/mm/yyyy') as writer:
+            MSIF_df.to_excel(writer, index=False, header=False, startrow=2, sheet_name='Sheet1')
+            workbook = writer.book
+            worksheet = writer.sheets['Sheet1']
+            header_format = workbook.add_format({'bold': True, 'font_color': 'white', 'align': 'center', 'valign': 'vcenter', 'bg_color':'#8b8b8b'})
+
+            worksheet.merge_range('A1:B1', 'Project Code', header_format)
+            worksheet.merge_range('A2:B2', '(ID & Name)', header_format)
+            worksheet.merge_range('C1:C2', 'Animal Code', header_format)
+            worksheet.merge_range('D1:D2', 'DOB', header_format)
+            worksheet.merge_range('E1:E2', 'Sex', header_format)
+            worksheet.merge_range('F1:F2', 'Genotype', header_format)
+            worksheet.merge_range('G1:G2', 'Send*', header_format)
+            writer.close()
+
+        st.download_button(
+            label="Download MSIF Table (Excel)",
+            data=output_excel.getvalue(),
+            file_name="MSIF_Table.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
