@@ -11,10 +11,14 @@ import io
 import xlsxwriter
 
 #%%% Meta updates
-Title = "Mouse Packer v4.2"
+Title = "Mouse Packer v4.21"
 
 # Changelog
 Changelog = """
+#------#
+V4.21 MSIF date format
+- Updated extract_MSIF_Table:
+    - Added date handling to DOB for different date formats
 #------#
 
 V4.2 Formatted MSIF
@@ -223,11 +227,16 @@ def assign_compartments(df):
     return pd.concat(final_df, ignore_index=True)
 
 def extract_MSIF_table(df):
-    #Extracts MSIF columns from the pack plan, renames them, sorts them, and adds 'Send' column
-    df = df[["Project ID", "Project Name","Animal Code","Date of Birth","Animal Gender","Genotype"]]
-    df = df.rename({"Animal Gender":"Sex", "Date of Birth":"DOB"}, axis = 1)
+    # Extract relevant columns
+    df = df[["Project ID", "Project Name", "Animal Code", "Date of Birth", "Animal Gender", "Genotype"]]
+    # Rename columns
+    df = df.rename(columns={"Animal Gender": "Sex", "Date of Birth": "DOB"})
+    # Convert DOB to datetime, with day-first format for AU compatibility
+    if df['DOB'].dtype == 'O':  # If object (likely string), try to parse
+        df['DOB'] = pd.to_datetime(df['DOB'], dayfirst=True, errors='coerce')
+    # Sort the data
     df = df.sort_values(by=['Animal Code', 'DOB', 'Sex', 'Genotype'], ascending=True)
-    df['DOB'] = pd.to_datetime(df['DOB'])
+    # Add 'Send*' column
     df['Send*'] = None
     return df
 #%%%
